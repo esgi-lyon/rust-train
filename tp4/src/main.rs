@@ -1,35 +1,66 @@
 use core::ops::Range;
-use std::{env, io::stdin};
+use std::{env, io::stdin, vec};
 
-type Memory = Vec<i64>;
-type InterpreterPayload = (Memory, i64);
+type MemoryValue = u32;
+type Memory = Vec<MemoryValue>;
+type InterpreterPayload = (Memory, MemoryValue);
 type InterpreterProcess = fn(InterpreterPayload) -> InterpreterPayload;
+type AWhile = (usize, Vec<Cmd>);
 
-fn init_mem(range: Range<i64>) -> Vec<i64> {
+// This shit code doesn't work !
+//
+//
+#[derive(Clone)]
+enum Cmd {
+    While(AWhile),
+    Single(InterpreterProcess),
+}
+
+fn init_mem(range: Range<MemoryValue>) -> Memory {
     return range.map(|_| 0).collect();
 }
 
 fn parse_arg(args: Vec<String>) -> Vec<String> {
-    if args.len() <= 1 { return vec![]; }
-    return args[1].split("").map(|e|e.to_string()).collect::<Vec<String>>();
+    if args.len() <= 1 {
+        return vec![];
+    }
+
+    return args
+        .split_at(1)
+        .1
+        .join("")
+        .replace(&['\n', '\t', '\'', ' '], "")
+        .split("")
+        .map(&str::to_string)
+        .collect();
 }
 
-fn case_move((mem, current): InterpreterPayload, the_move: i64) -> InterpreterPayload{
-    let new_curr = if (current + the_move) < 0 || current == 1000 {
-        current
+fn case_move((mem, current): InterpreterPayload, the_move: i32) -> InterpreterPayload {
+    let new_curr = if (current as i32 + the_move) <= 0 {
+        0
     } else {
-        current + the_move
+        current as i32 + the_move
     };
 
-    return (mem, new_curr);
+    return (mem, new_curr as u32);
 }
 
-fn move_case_left((mem, current): InterpreterPayload) -> InterpreterPayload { case_move((mem, current), -1) }
+fn move_case_left((mem, current): InterpreterPayload) -> InterpreterPayload {
+    case_move((mem, current), -1)
+}
 
-fn move_case_right((mem, current): InterpreterPayload) -> InterpreterPayload { case_move((mem, current), 1) }
+fn move_case_right((mem, current): InterpreterPayload) -> InterpreterPayload {
+    case_move((mem, current), 1)
+}
 
-fn add_to_case((mut mem, current): InterpreterPayload, to_add: i64) -> (Vec<i64>, i64) {
-    mem[current as usize] += to_add;
+fn add_to_case((mut mem, current): InterpreterPayload, to_add: i32) -> InterpreterPayload {
+    let res = (if mem[current as usize] as i32 + to_add <= 0 {
+        0
+    } else {
+        mem[current as usize] as i32 + to_add
+    }) as u32;
+
+    mem[current as usize] = res as u32;
 
     return (mem, current);
 }
@@ -42,8 +73,16 @@ fn decrement_case((mem, current): InterpreterPayload) -> InterpreterPayload {
     return add_to_case((mem, current), -1);
 }
 
+/// SHOW
 fn show_case((mem, current): InterpreterPayload) -> InterpreterPayload {
-    print!("[{}]: {}\n", current, mem[current as usize]);
+    let the_char = char::from_digit(mem[current as usize], 10);
+
+    if the_char.is_none() { 
+        print!(" ");
+        return (mem, current) 
+    };
+
+    print!("{:?}", the_char.unwrap());
     return (mem, current);
 }
 
@@ -54,80 +93,101 @@ fn input_to_case((mut mem, current): InterpreterPayload) -> InterpreterPayload {
         .read_line(&mut input)
         .expect("error: unable to read user input");
     println!("{}", input);
-    let store: i64 = mem[current as usize];
-    mem[current as usize] = input.parse::<i64>().unwrap_or(store);
+    let store: MemoryValue = mem[current as usize];
+    mem[current as usize] = input.parse::<MemoryValue>().unwrap_or(store);
 
     return (mem, current);
 }
 
-fn start_while(
-    mut in_while: Vec<InterpreterProcess>,
-    (mem, current): InterpreterPayload
-) -> (InterpreterPayload, Vec<InterpreterProcess>) {
-    // dummy command just to init while collection
-    in_while.push(|(mem, current): InterpreterPayload| (mem, current));
-
-    return ((mem, current), in_while);
-}
-
-fn add_to_while_if_not_empty(
-    (mut mem, mut current): InterpreterPayload,
-    mut cmds: Vec<InterpreterProcess>,
-    current_cmd: InterpreterProcess,
-) -> (InterpreterPayload, Vec<InterpreterProcess>) {
+fn close_last_while(mut cmds: Vec<Cmd>) -> Vec<Cmd> {
     if cmds.len() < 1 {
-        (mem, current) = current_cmd((mem, current));
-        return ((mem, current), cmds);
+        return cmds;
     }
 
+    let the_while = match cmds.pop().unwrap() {
+        Cmd::While(v) => Option::Some(v),
+        Cmd::Single(_) => Option::None,
+    };
+
+    if the_while.is_none() {
+        return cmds;
+    }
+
+    let mut curr_while: AWhile = the_while.unwrap();
+
+    if curr_while.0 > 0 {
+        return cmds;
+    }
+    
+    curr_while.0 = curr_while.1.len();
+
+    return cmds;
+}
+
+fn add_to_commands(
+    mut cmds: Vec<Cmd>,
+    current_cmd: Cmd,
+) -> Vec<Cmd> {
     cmds.push(current_cmd);
 
-    return ((mem, current), cmds);
+    return cmds;
 }
 
-fn process_while(
-    mut in_while: Vec<InterpreterProcess>,
-    (mem, mut current): InterpreterPayload
-) -> (InterpreterPayload, Vec<InterpreterProcess>) {
-    let mut res_mem: Vec<i64> = mem.clone();
-    
-    if current < 0 {
-        return ((res_mem, current), in_while);
+// FIFO system
+fn start_a_while(mut in_while: Vec<Cmd>) -> Vec<Cmd> {
+    in_while.push(Cmd::While((0, vec![])));
+
+    return in_while;
+}
+
+fn process_cmd(cmd: &Cmd, mut mem: Vec<u32>, mut current: u32) -> InterpreterPayload {
+    return match cmd {
+        Cmd::While((end, func)) => {
+            let while_processes = Range {start:0, end: *end}
+                .map(|e| {
+                    return func.get(e)
+                })
+                .filter(|f|!f.is_none())
+                .map(|f|f.unwrap());
+
+                while_processes.for_each(|proc|{
+                    (mem, current) = process_cmd(proc, mem.to_vec(), current)
+                });
+
+                return (mem, current)
+        },
+        Cmd::Single(proc) => proc((mem, current)),
+    }
+}
+
+fn interpretor(ops: &[String]) {
+    let mut mem: Vec<u32> = init_mem(0..4000);
+    let mut current: u32 = 0;
+    let mut command_bus: Vec<Cmd> = vec![];
+
+    for arg in ops {
+       command_bus = match arg.as_str() {
+            "+" => add_to_commands( command_bus, Cmd::Single(increment_case)),
+            "-" => add_to_commands(command_bus, Cmd::Single(decrement_case)),
+            ">" => add_to_commands( command_bus, Cmd::Single(move_case_right)),
+            "<" => add_to_commands( command_bus, Cmd::Single(move_case_left)),
+            "." => add_to_commands(command_bus, Cmd::Single(show_case)),
+            "," => add_to_commands( command_bus, Cmd::Single(input_to_case)),
+            "[" => start_a_while(command_bus),
+            "]" => close_last_while( command_bus),
+            _ => command_bus,
+        };
     }
 
-    while current > 0 {
-        for cmd in in_while.iter() {
-            (res_mem, current) = cmd((res_mem, current))
-        }
-
-        current-=1;
-    }
-
-    in_while.clear();
-
-    return ((res_mem, current), in_while);
+    command_bus.iter().for_each(|e| {
+        (mem, current) = process_cmd(e, mem.to_vec(), current)
+    })
 }
 
 fn main() {
-    let mut mem: Vec<i64> = init_mem(0..1000);
-
     let args: Vec<String> = parse_arg(env::args().collect());
-    let mut current: i64 = 0;
-    let mut in_while: Vec<InterpreterProcess> = vec![];
 
-    if let Some((_, brainfuck_op)) = args.split_first() {
-        for arg in brainfuck_op {
-            ((mem, current), in_while) = match arg.as_str() {
-                "+" => add_to_while_if_not_empty((mem, current), in_while, increment_case),
-                "-" => add_to_while_if_not_empty((mem, current), in_while, decrement_case),
-                ">" => add_to_while_if_not_empty((mem, current), in_while, move_case_right),
-                "<" => add_to_while_if_not_empty((mem, current), in_while, move_case_left),
-                "." => add_to_while_if_not_empty((mem, current), in_while, show_case),
-                "," => add_to_while_if_not_empty((mem, current), in_while, input_to_case),
-                "[" => start_while(in_while, (mem, current)),
-                "]" => process_while(in_while, (mem, current)),
-                _ => ((mem, current), in_while),
-            };
-        }
+    if let Some((_, brainfuck_ops)) = args.split_first() {
+        interpretor(brainfuck_ops)
     }
 }
