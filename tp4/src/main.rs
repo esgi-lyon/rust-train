@@ -75,14 +75,9 @@ fn decrement_case((mem, current): InterpreterPayload) -> InterpreterPayload {
 
 /// SHOW
 fn show_case((mem, current): InterpreterPayload) -> InterpreterPayload {
-    let the_char = char::from_digit(mem[current as usize], 10);
+    let the_char = char::from_u32(mem[current as usize]).unwrap_or(' ');
 
-    if the_char.is_none() { 
-        print!(" ");
-        return (mem, current) 
-    };
-
-    print!("{:?}", the_char.unwrap());
+    print!("{}", the_char);
     return (mem, current);
 }
 
@@ -161,7 +156,7 @@ fn process_cmd(cmd: &Cmd, mut mem: Vec<u32>, mut current: u32) -> InterpreterPay
 }
 
 fn interpretor(ops: &[String]) {
-    let mut mem: Vec<u32> = init_mem(0..4000);
+    let mut mem: Memory = init_mem(0..4000);
     let mut current: u32 = 0;
     let mut command_bus: Vec<Cmd> = vec![];
 
